@@ -2,9 +2,10 @@ package provider
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/mrparkers/terraform-provider-keycloak/keycloak"
-	"strings"
 )
 
 func resourceKeycloakUserRoles() *schema.Resource {
@@ -37,7 +38,7 @@ func resourceKeycloakUserRoles() *schema.Resource {
 			"exhaustive": {
 				Type:     schema.TypeBool,
 				Optional: true,
-				Default:  true,
+				Default:  false,
 			},
 		},
 	}
@@ -136,6 +137,7 @@ func resourceKeycloakUserRolesReconcile(data *schema.ResourceData, meta interfac
 
 	// remove roles if exhaustive (authoritative)
 	if exhaustive {
+
 		err = removeRolesFromUser(keycloakClient, updates.clientRolesToRemove, updates.realmRolesToRemove, user)
 		if err != nil {
 			return err
@@ -151,7 +153,9 @@ func resourceKeycloakUserRolesRead(data *schema.ResourceData, meta interface{}) 
 
 	realmId := data.Get("realm_id").(string)
 	userId := data.Get("user_id").(string)
+
 	sortedRoleIds := interfaceSliceToStringSlice(data.Get("role_ids").(*schema.Set).List())
+
 	exhaustive := data.Get("exhaustive").(bool)
 
 	// check if user exists, remove from state if not found
@@ -160,6 +164,7 @@ func resourceKeycloakUserRolesRead(data *schema.ResourceData, meta interface{}) 
 	}
 
 	roles, err := keycloakClient.GetUserRoleMappings(realmId, userId)
+
 	if err != nil {
 		return err
 	}
@@ -169,12 +174,18 @@ func resourceKeycloakUserRolesRead(data *schema.ResourceData, meta interface{}) 
 	for _, realmRole := range roles.RealmMappings {
 		if exhaustive || stringSliceContains(sortedRoleIds, realmRole.Id) {
 			roleIds = append(roleIds, realmRole.Id)
+		} else if !exhaustive && realmRole.Name != "offline_access" && realmRole.Name != "uma_authorization" {
+			// exclusion des realms roles par defaut, non manages par terraform
+			roleIds = append(roleIds, realmRole.Id)
 		}
 	}
 
-	for _, clientRoleMapping := range roles.ClientMappings {
+	for currentClient, clientRoleMapping := range roles.ClientMappings {
 		for _, clientRole := range clientRoleMapping.Mappings {
 			if exhaustive || stringSliceContains(sortedRoleIds, clientRole.Id) {
+				roleIds = append(roleIds, clientRole.Id)
+			} else if !exhaustive && currentClient != "account" {
+				// exclusion des roles du client id account par defaut non managed par terraform
 				roleIds = append(roleIds, clientRole.Id)
 			}
 		}
@@ -220,8 +231,7 @@ func resourceKeycloakUserRolesImport(d *schema.ResourceData, meta interface{}) (
 
 	d.Set("realm_id", realmId)
 	d.Set("user_id", userId)
-	d.Set("exhaustive", true)
-
+	d.Set("exhaustive", false) // import par defaut en exhaustive a false, partiel
 	d.SetId(userRolesId(realmId, userId))
 
 	return []*schema.ResourceData{d}, resourceKeycloakUserRolesRead(d, meta)
